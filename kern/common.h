@@ -15,6 +15,9 @@
 #ifndef ECAPTURE_COMMON_H
 #define ECAPTURE_COMMON_H
 
+// Comment out for release builds (silences bpf_trace_printk / trace_pipe noise).
+#define DEBUG_PRINT
+
 #ifdef DEBUG_PRINT
 #define debug_bpf_printk(fmt, ...)                     \
     do {                                               \

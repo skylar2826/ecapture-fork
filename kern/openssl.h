@@ -403,7 +403,7 @@ static __always_inline int kretprobe_connect(struct pt_regs *ctx, int fd, struct
     }
 
     bpf_probe_read_kernel(&address_family, sizeof(address_family), &sk->__sk_common.skc_family);
-    debug_bpf_printk("@ sockaddr FM :%d\n", address_family);
+    // debug_bpf_printk("@ sockaddr FM :%d\n", address_family);
 
     if (address_family == AF_INET) {
         u64 addrs;

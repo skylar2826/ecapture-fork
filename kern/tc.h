@@ -99,6 +99,22 @@ static __always_inline struct skb_data_event_t *make_skb_data_event() {
     return event;
 }
 
+// tc/classifier compatibility helper:
+// On some kernels, bpf_get_current_cgroup_id() is not available for classifier
+// programs. Keep tc filtering to pid/uid only.
+static __always_inline bool filter_rejects_tc(u32 pid, u32 uid) {
+    if (less52 == 1) {
+        return false;
+    }
+    if (target_pid != 0 && target_pid != pid) {
+        return true;
+    }
+    if (target_uid != 0 && target_uid != uid) {
+        return true;
+    }
+    return false;
+}
+
 static __always_inline bool skb_revalidate_data(struct __sk_buff *skb,
                                                 uint8_t **head, uint8_t **tail,
                                                 const u32 offset) {
@@ -239,7 +255,7 @@ static __always_inline int capture_packets(struct __sk_buff *skb, bool is_ingres
 
     if (net_ctx != NULL) {
         // pid uid filter
-        if (filter_rejects(net_ctx->pid, net_ctx->uid)) {
+        if (filter_rejects_tc(net_ctx->pid, net_ctx->uid)) {
             return TC_ACT_OK;
         }
 
