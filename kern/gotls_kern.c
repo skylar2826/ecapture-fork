@@ -24,6 +24,8 @@
 #define EVP_MAX_MD_SIZE 64
 #define GOTLS_EVENT_TYPE_WRITE 0
 #define GOTLS_EVENT_TYPE_READ 1
+// Max bpf_perf_event_output calls per hook (16 * 16KB = 256KB); must fully unroll for verifier.
+#define GOTLS_MAX_SEGMENTS 16
 
 // // TLS record types in golang tls package
 #define recordTypeApplicationData 23
@@ -247,6 +249,46 @@ static __always_inline void fill_fd_and_addr_from_tls_conn(void *tls_conn_ptr,
     extract_addr_from_netfd_ptr(netfd_ptr, src_ip, src_port, dst_ip, dst_port, ip_version);
 }
 
+static __always_inline int gotls_emit_payload(struct pt_regs *ctx,
+                                              struct go_tls_event *event,
+                                              const char *base,
+                                              s32 total_len,
+                                              u8 event_type) {
+    if (!base || total_len <= 0) {
+        return 0;
+    }
+
+    const u32 max_chunk = MAX_DATA_SIZE_OPENSSL;
+    const s32 max_total = (s32)(max_chunk * GOTLS_MAX_SEGMENTS);
+    if (total_len > max_total) {
+        total_len = max_total;
+    }
+
+    u32 off = 0;
+    event->event_type = event_type;
+
+#pragma clang loop unroll(full)
+    for (int i = 0; i < GOTLS_MAX_SEGMENTS; i++) {
+        if (off >= (u32)total_len) {
+            break;
+        }
+
+        u32 chunk = (u32)total_len - off;
+        if (chunk > max_chunk) {
+            chunk = max_chunk;
+        }
+
+        event->data_len = (s32)chunk;
+        if (bpf_probe_read_user(&event->data, chunk, (void *)(base + off)) < 0) {
+            return 0;
+        }
+        bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event,
+                              sizeof(struct go_tls_event));
+        off += chunk;
+    }
+    return 0;
+}
+
 static __always_inline int gotls_write(struct pt_regs *ctx, bool is_register_abi) {
     if (!passes_filter(ctx)) {
         return 0;
@@ -277,23 +319,14 @@ static __always_inline int gotls_write(struct pt_regs *ctx, bool is_register_abi
     if (!event) {
         return 0;
     }
-
     fill_fd_and_addr_from_tls_conn(tls_conn_ptr, &event->fd,
                                     event->src_ip, &event->src_port,
                                     event->dst_ip, &event->dst_port,
                                     &event->ip_version, "WRITE");
 
-    event->data_len =
-        (len < MAX_DATA_SIZE_OPENSSL ? (len & (MAX_DATA_SIZE_OPENSSL - 1))
-                                     : MAX_DATA_SIZE_OPENSSL);
-    int ret = bpf_probe_read_user(&event->data, event->data_len, (void *)str);
-    if (ret < 0) {
-        return 0;
-    }
     debug_bpf_printk("gotls_write: pid=%u fd=%u ip_version=%u\n",
                      event->pid, event->fd, event->ip_version);
-    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(struct go_tls_event));
-    return 0;
+    return gotls_emit_payload(ctx, event, str, len, GOTLS_EVENT_TYPE_WRITE);
 }
 
 // capture golang tls plaintext, supported golang stack-based ABI (go version
@@ -344,25 +377,14 @@ static __always_inline int gotls_read(struct pt_regs *ctx, bool is_register_abi)
     if (!event) {
         return 0;
     }
-
     fill_fd_and_addr_from_tls_conn(tls_conn_ptr, &event->fd,
                                     event->src_ip, &event->src_port,
                                     event->dst_ip, &event->dst_port,
                                     &event->ip_version, "READ");
 
-    event->data_len =
-        (ret_len < MAX_DATA_SIZE_OPENSSL ? (ret_len & (MAX_DATA_SIZE_OPENSSL - 1))
-                                     : MAX_DATA_SIZE_OPENSSL);
-    event->event_type = GOTLS_EVENT_TYPE_READ;
-    int ret = bpf_probe_read_user(&event->data, event->data_len, (void *)str);
-    if (ret < 0) {
-        return 0;
-    }
     debug_bpf_printk("gotls_read: pid=%u fd=%u ip_version=%u\n",
                      event->pid, event->fd, event->ip_version);
-
-    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(struct go_tls_event));
-    return 0;
+    return gotls_emit_payload(ctx, event, str, ret_len, GOTLS_EVENT_TYPE_READ);
 }
 
 // capture golang tls plaintext, supported golang stack-based ABI (go version
