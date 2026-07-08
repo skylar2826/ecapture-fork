@@ -249,6 +249,25 @@ static __always_inline void fill_fd_and_addr_from_tls_conn(void *tls_conn_ptr,
     extract_addr_from_netfd_ptr(netfd_ptr, src_ip, src_port, dst_ip, dst_port, ip_version);
 }
 
+// Emit one 16KB segment; seg_idx must be a compile-time constant for verifier bounds.
+#define GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, seg_idx)               \
+    do {                                                                           \
+        const u32 _off = (u32)(seg_idx) * (max_chunk);                             \
+        if (_off < (total)) {                                                      \
+            u32 _remain = (total) - _off;                                          \
+            u32 _chunk = _remain < (max_chunk) ? (_remain & ((max_chunk) - 1))     \
+                                             : (max_chunk);                        \
+            if (_chunk > 0) {                                                      \
+                (event)->data_len = (s32)_chunk;                                   \
+                if (bpf_probe_read_user(&(event)->data, _chunk,                   \
+                                        (void *)((u64)(base) + (u64)_off)) == 0) { \
+                    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event,  \
+                                          sizeof(struct go_tls_event));            \
+                }                                                                  \
+            }                                                                      \
+        }                                                                          \
+    } while (0)
+
 static __always_inline int gotls_emit_payload(struct pt_regs *ctx,
                                               struct go_tls_event *event,
                                               const char *base,
@@ -259,33 +278,30 @@ static __always_inline int gotls_emit_payload(struct pt_regs *ctx,
     }
 
     const u32 max_chunk = MAX_DATA_SIZE_OPENSSL;
-    const s32 max_total = (s32)(max_chunk * GOTLS_MAX_SEGMENTS);
-    if (total_len > max_total) {
-        total_len = max_total;
+    const u32 max_total = max_chunk * GOTLS_MAX_SEGMENTS;
+    u32 total = (u32)total_len;
+    if (total > max_total) {
+        total = max_total;
     }
 
-    u32 off = 0;
     event->event_type = event_type;
 
-#pragma clang loop unroll(full)
-    for (int i = 0; i < GOTLS_MAX_SEGMENTS; i++) {
-        if (off >= (u32)total_len) {
-            break;
-        }
-
-        u32 chunk = (u32)total_len - off;
-        if (chunk > max_chunk) {
-            chunk = max_chunk;
-        }
-
-        event->data_len = (s32)chunk;
-        if (bpf_probe_read_user(&event->data, chunk, (void *)(base + off)) < 0) {
-            return 0;
-        }
-        bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event,
-                              sizeof(struct go_tls_event));
-        off += chunk;
-    }
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 0);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 1);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 2);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 3);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 4);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 5);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 6);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 7);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 8);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 9);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 10);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 11);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 12);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 13);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 14);
+    GOTLS_EMIT_SEG(ctx, event, base, total, max_chunk, 15);
     return 0;
 }
 
